@@ -5,15 +5,17 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.BufferedWriter
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.*
-import kotlin.io.path.*
 
-class NewsService : AutoCloseable {
+open class NewsService : AutoCloseable {
     private val logger = LoggerFactory.getLogger(NewsService::class.java)
     private val client: HttpClient
 
@@ -46,7 +48,7 @@ class NewsService : AutoCloseable {
         }
     }
 
-    fun saveNews(path: String, news: Collection<News>) {
+    open fun saveNews(path: String, news: Collection<News>) {
         val filePath = validateFilePath(path)
 
         try {
@@ -98,4 +100,39 @@ class NewsService : AutoCloseable {
     override fun close() {
         client.close()
     }
+}
+
+fun main() = runBlocking {
+    val newsService = NewsService()
+    val channel = Channel<List<News>>(Channel.UNLIMITED)
+    val workerCount = 5
+    val totalPages = 10
+
+    val processor = launch {
+        val path = "news.csv"
+        val allNews = mutableListOf<News>()
+        for (newsList in channel) {
+            allNews.addAll(newsList)
+        }
+        newsService.saveNews(path, allNews)
+        println("Все новости успешно сохранены в $path")
+    }
+
+    val workers = List(workerCount) { workerId ->
+        launch {
+            var page = workerId + 1
+            while (page <= totalPages) {
+                val news = newsService.getNews(page)
+                channel.send(news)
+                page += workerCount
+            }
+        }
+    }
+
+    workers.forEach { it.join() }
+    channel.close()
+
+    processor.join()
+
+    newsService.close()
 }
